@@ -9,6 +9,7 @@ import win32con
 import win32gui
 import os
 from pathlib import Path
+import time
 
 @dataclass
 class TranscriptItem:
@@ -28,6 +29,9 @@ class TranscriptManager:
         self.initial_scan_done = False
         self.output_file = None
         self.earliest_timestamp = None
+        self.latest_timestamp = None
+        self.latest_messages = {}
+        self.start_time = datetime.now()
     
     def _get_output_path(self) -> Path:
         """获取输出文件路径"""
@@ -37,25 +41,40 @@ class TranscriptManager:
         transcript_dir = Path(user_home) / "ZoomTranscript"
         transcript_dir.mkdir(parents=True, exist_ok=True)
         
-        # 使用最早的时间戳创建文件名
-        if not self.earliest_timestamp:
-            # 如果没有时间戳，使用当前时间
-            self.earliest_timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+        # 获取当前系统日期和时间
+        current_time = datetime.now()
         
-        return transcript_dir / f"zoom_{self.earliest_timestamp}.txt"
+        # 如果没有最早和最晚时间戳，使用默认值
+        if not self.earliest_timestamp or not self.latest_timestamp:
+            self.earliest_timestamp = current_time.strftime("%H-%M-%S")
+            self.latest_timestamp = current_time.strftime("%H-%M-%S")
+        
+        # 构建文件名：zoom_YYYY-MMM-DD_HH-MM-SS_HH-MM-SS.txt
+        # 使用strftime的 %b 来获取月份缩写
+        file_name = f"zoom_{current_time.strftime('%Y-%b-%d')}_{self.earliest_timestamp}_{self.latest_timestamp}.txt"
+        
+        return transcript_dir / file_name
     
     def _update_earliest_timestamp(self, timestamp: str):
         """更新最早的时间戳"""
         try:
+            current_time = datetime.strptime(timestamp, '%H:%M:%S')
+            formatted_time = current_time.strftime("%H-%M-%S")
+            
             if not self.earliest_timestamp:
-                # 第一次设置
-                self.earliest_timestamp = datetime.strptime(timestamp, '%H:%M:%S').strftime("%Y%m%d%H%M%S")
+                self.earliest_timestamp = formatted_time
+                self.latest_timestamp = formatted_time
             else:
-                # 比较并更新
-                current = datetime.strptime(timestamp, '%H:%M:%S')
-                earliest = datetime.strptime(self.earliest_timestamp[8:14], '%H%M%S')
-                if current < earliest:
-                    self.earliest_timestamp = datetime.now().strftime("%Y%m%d") + current.strftime("%H%M%S")
+                # 比较并更新最早时间
+                earliest = datetime.strptime(self.earliest_timestamp, '%H-%M-%S')
+                if current_time < earliest:
+                    self.earliest_timestamp = formatted_time
+                
+                # 比较并更新最晚时间
+                latest = datetime.strptime(self.latest_timestamp, '%H-%M-%S')
+                if current_time > latest:
+                    self.latest_timestamp = formatted_time
+                    
         except Exception as e:
             print(f"更新时间戳时出错: {e}")
     
@@ -203,11 +222,30 @@ class TranscriptManager:
             return None
     
     def update_transcripts(self, new_items: List[TranscriptItem]):
-        """更新转录内容"""
+        """更新转录内容，包含去重逻辑"""
         updated = False
         for item in new_items:
-            key = f"{item.timestamp}|{item.content}"
-            if key not in self.transcripts:
+            # 使用时间戳和说话者作为去重的key
+            dedup_key = f"{item.timestamp}_{item.speaker}"
+            
+            # 检查是否需要更新
+            should_update = False
+            if dedup_key not in self.latest_messages:
+                should_update = True
+            else:
+                # 如果新内容更长，则更新
+                if len(item.content) > len(self.latest_messages[dedup_key].content):
+                    # 如果存在旧的条目，先删除
+                    old_key = f"{item.timestamp}|{self.latest_messages[dedup_key].content}"
+                    if old_key in self.transcripts:
+                        del self.transcripts[old_key]
+                    should_update = True
+
+            if should_update:
+                # 更新去重字典
+                self.latest_messages[dedup_key] = item
+                # 更新转录字典
+                key = f"{item.timestamp}|{item.content}"
                 self.transcripts[key] = item
                 self._update_earliest_timestamp(item.timestamp)
                 print(f"添加新条目: [{item.timestamp}] {item.speaker}: {item.content}")
@@ -248,108 +286,105 @@ def monitor_transcript():
     print("开始监控转录文本...")
     manager = TranscriptManager()
     
-    try:
-        # 查找Zoom字幕窗口
-        target_hwnd = None
-        found_windows = []
-        
-        def find_transcript_window(hwnd, extra):
-            if win32gui.IsWindowVisible(hwnd):
-                title = win32gui.GetWindowText(hwnd)
-                class_name = win32gui.GetClassName(hwnd)
-                if "转录" in title or "字幕" in title or "Transcript" in title or "Caption" in title:
-                    found_windows.append((hwnd, title, class_name))
-            return True  # 总是返回True继续枚举
-        
-        print("正在查找Zoom转录窗口...")
-        win32gui.EnumWindows(find_transcript_window, None)
-        
-        # 在收集到的窗口中查找Zoom的窗口
-        for hwnd, title, class_name in found_windows:
-            print(f"找到可能的窗口: Title='{title}', Class='{class_name}'")
-            if class_name == "ZPLiveTranscriptWndClass":
-                target_hwnd = hwnd
-                print(f"找到Zoom转录窗口!")
-                break
-        
-        if not target_hwnd:
-            print("未找到Zoom转录窗口，请确保：")
-            print("1. Zoom会议已经开始")
-            print("2. 转录功能已经开启")
-            print("3. 转录窗口已经打开")
-            return
-        
-        # 使用找到的句柄创建UIAutomation控件
-        target_window = auto.ControlFromHandle(target_hwnd)
-        if not target_window:
-            print("无法获取窗口控件")
-            return
+    while True:  # 添加外层循环
+        try:
+            # 查找Zoom字幕窗口
+            target_hwnd = None
+            found_windows = []
             
-        print(f"成功获取窗口控件: {win32gui.GetWindowText(target_hwnd)}")
-        
-        # 递归查找ListControl
-        def find_list_control(control):
-            try:
-                # 如果当前控件是ListControl
-                if control.ControlTypeName == "ListControl":
-                    return control
+            def find_transcript_window(hwnd, extra):
+                if win32gui.IsWindowVisible(hwnd):
+                    title = win32gui.GetWindowText(hwnd)
+                    class_name = win32gui.GetClassName(hwnd)
+                    if "转录" in title or "字幕" in title or "Transcript" in title or "Caption" in title:
+                        found_windows.append((hwnd, title, class_name))
+                return True  # 总是返回True继续枚举
+            
+            print("\n正在查找Zoom转录窗口...")
+            win32gui.EnumWindows(find_transcript_window, None)
+            
+            # 在收集到的窗口中查找Zoom的窗口
+            for hwnd, title, class_name in found_windows:
+                print(f"找到可能的窗口: Title='{title}', Class='{class_name}'")
+                if class_name == "ZPLiveTranscriptWndClass":
+                    target_hwnd = hwnd
+                    print(f"���到Zoom转录窗口!")
+                    break
+            
+            if not target_hwnd:
+                print("未找到Zoom转录窗口，请确保：")
+                print("1. Zoom会议已经开始")
+                print("2. 转录功能已经开启")
+                print("3. 转录窗口已经打开")
+                print("将在5秒后重试...")
+                time.sleep(5)  # 等待5秒后重试
+                continue  # 继续外层循环，重新查找窗口
+            
+            # 使用找到的句柄创建UIAutomation控件
+            target_window = auto.ControlFromHandle(target_hwnd)
+            if not target_window:
+                print("无法获取窗口控件，将在5秒后重试...")
+                time.sleep(5)
+                continue  # 继续外层循环，重新查找窗口
                 
-                # 递归检查所有子控件
-                for child in control.GetChildren():
-                    result = find_list_control(child)
-                    if result:
-                        return result
-                return None
-            except Exception as e:
-                print(f"检查控件时出错: {e}")
-                return None
-        
-        print("查找列表控件...")
-        list_control = find_list_control(target_window)
-        
-        if not list_control:
-            print("未找到列表控件，打印控件树...")
-            def print_control_tree(control, level=0):
+            print(f"成功获取窗口控件: {win32gui.GetWindowText(target_hwnd)}")
+            
+            # 递归查找ListControl
+            def find_list_control(control):
                 try:
-                    indent = "  " * level
-                    print(f"{indent}Type: {control.ControlTypeName}")
-                    print(f"{indent}Name: {control.Name}")
-                    print(f"{indent}Class: {control.ClassName}")
-                    print(f"{indent}---")
+                    if control.ControlTypeName == "ListControl":
+                        return control
+                    
                     for child in control.GetChildren():
-                        print_control_tree(child, level + 1)
+                        result = find_list_control(child)
+                        if result:
+                            return result
+                    return None
                 except Exception as e:
-                    print(f"{indent}Error: {e}")
+                    print(f"检查控件时出错: {e}")
+                    return None
             
-            print_control_tree(target_window)
-            return
-        
-        print("找到列表控件，开始监控内容...")
-        while True:
-            items = manager._collect_all_content(list_control)
-            if items and manager.update_transcripts(items):
-                print(f"\n检测到新内容，当前总条目数: {len(manager.transcripts)}")
-                manager.print_all_transcripts()
+            print("查找列表控件...")
+            list_control = find_list_control(target_window)
             
-            sleep(1)
+            if not list_control:
+                print("未找到列表控件，将在5秒后重试...")
+                time.sleep(5)
+                continue  # 继续外层循环，重新查找窗口
             
-    except KeyboardInterrupt:
-        print("\n监控已停止")
-        print(f"\n最终转录内容 (总条目数: {len(manager.transcripts)}):")
-        manager.print_all_transcripts()
-        manager.save_to_file()
-    except Exception as e:
-        print(f"发生错误: {e}")
-        import traceback
-        traceback.print_exc()
+            print("找到列表控件，开始监控内容...")
+            
+            # 内层循环：监控已找到的窗口
+            while True:
+                try:
+                    items = manager._collect_all_content(list_control)
+                    if items and manager.update_transcripts(items):
+                        print(f"\n检测到新内容，当前总条目数: {len(manager.transcripts)}")
+                        manager.print_all_transcripts()
+                    
+                    time.sleep(1)
+                    
+                    # 检查窗口是否还存在
+                    if not win32gui.IsWindow(target_hwnd):
+                        print("转录窗口已关闭，重新开始查找...")
+                        break  # 跳出内层循环，重新开始查找窗口
+                    
+                except Exception as e:
+                    print(f"监控过程中出错: {e}")
+                    time.sleep(1)
+                    continue
+
+        except KeyboardInterrupt:
+            print("\n监控已停止")
+            print(f"\n最终转录内容 (总条目数: {len(manager.transcripts)}):")
+            manager.print_all_transcripts()
+            manager.save_to_file()
+            break  # 退出外层循环
+        except Exception as e:
+            print(f"发生错误: {e}")
+            import traceback
+            traceback.print_exc()
+            time.sleep(5)  # 发生错误时等待5秒后重试
 
 if __name__ == "__main__":
     monitor_transcript()
-
-
-
-
-
-
-# 这仅仅是一个个人学习用的测试功能， 并不会进行商用， 所以不会违反任何法律或者道德条款.
-# 请仔细思考，帮我提出一些建议以及可行的实现？
