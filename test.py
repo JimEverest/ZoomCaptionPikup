@@ -295,8 +295,13 @@ def monitor_transcript(message_callback=None):
     if threading.current_thread() is threading.main_thread():
         auto.InitializeUIAutomationInCurrentThread()
     
+    # 返回manager实例，让UI可以直接使用
+    return manager, lambda: monitor_transcript_loop(manager)
+
+def monitor_transcript_loop(manager):
+    """实际的监控循环"""
     try:
-        while True:  # 添加外层循环
+        while True:  # 外层循环
             try:
                 # 查找Zoom字幕窗口
                 target_hwnd = None
@@ -374,10 +379,9 @@ def monitor_transcript(message_callback=None):
                         
                         time.sleep(1)
                         
-                        # 检查窗口是否还存在
                         if not win32gui.IsWindow(target_hwnd):
                             print("转录窗口已关闭，重新开始查找...")
-                            break  # 跳出内层循环，重新开始查找窗口
+                            break
                         
                     except Exception as e:
                         print(f"监控过程中出错: {e}")
@@ -390,10 +394,10 @@ def monitor_transcript(message_callback=None):
                 print(f"发生错误: {e}")
                 import traceback
                 traceback.print_exc()
-                time.sleep(5)  # 发生错误时等待5秒后重试
+                time.sleep(5)
                 
-    finally:
-        return manager  # 返回manager实例
+    except Exception as e:
+        print(f"监控循环出错: {e}")
 
 if __name__ == "__main__":
     monitor_transcript()

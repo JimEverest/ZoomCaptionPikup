@@ -6,9 +6,18 @@ import queue
 import uiautomation as auto
 from test import TranscriptManager, monitor_transcript
 import re
+import configparser
+from gpt4o import ask
+import os
 
 class MeetingNavigator:
     def __init__(self, root):
+        # 首先加载配置文件
+        self.config = configparser.ConfigParser()
+        config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'config.ini')
+        if not self.config.read(config_path, encoding='utf-8'):
+            raise Exception("无法加载配置文件: config.ini")
+        
         self.root = root
         self.root.title("Meeting Navigator")
         self.root.geometry("1200x800")
@@ -276,17 +285,25 @@ class MeetingNavigator:
         def run_monitor():
             try:
                 with auto.UIAutomationInitializerInThread():
-                    # 直接使用monitor_transcript的返回值作为transcript_manager
-                    self.transcript_manager = monitor_transcript(
+                    print("Debug: Starting monitor_transcript...")
+                    # 获取manager实例和监控循环函数
+                    manager, monitor_loop = monitor_transcript(
                         lambda msg_type, content: self.message_queue.put((msg_type, content))
                     )
+                    # 设置manager
+                    self.transcript_manager = manager
+                    # 运行监控循环
+                    monitor_loop()
             except Exception as e:
+                print(f"Debug: Error in run_monitor: {e}")
                 self.message_queue.put(("error", f"Transcript monitor error: {str(e)}"))
         
         if self.transcript_thread is None or not self.transcript_thread.is_alive():
+            print("Debug: Creating new transcript monitor thread")
             self.transcript_thread = threading.Thread(target=run_monitor)
             self.transcript_thread.daemon = True
             self.transcript_thread.start()
+            print("Debug: Transcript monitor thread started")
     
     def update_ui(self):
         """更新UI的周期性任务"""
@@ -348,41 +365,173 @@ class MeetingNavigator:
         except Exception as e:
             self.show_error(f"保存失败: {str(e)}")
     
+    def get_transcript_text(self):
+        """获取所有transcript内容"""
+        try:
+            print("\nDebug: Getting transcript text...")
+            
+            if not self.transcript_manager:
+                print("Debug: transcript_manager is None")
+                return ""
+            
+            print(f"Debug: transcript_manager exists, transcripts count: {len(self.transcript_manager.transcripts)}")
+            
+            if not self.transcript_manager.transcripts:
+                print("Debug: transcripts dictionary is empty")
+                return ""
+            
+            # 获取所有转录内容并按时间排序
+            sorted_items = sorted(
+                self.transcript_manager.transcripts.values(),
+                key=lambda x: datetime.strptime(x.timestamp, '%H:%M:%S')
+            )
+            
+            print(f"Debug: Sorted items count: {len(sorted_items)}")
+            
+            # 将每个条目转换为字符串并连接
+            transcript_text = "\n".join(item.to_string() for item in sorted_items)
+            
+            print("Debug: Current transcript:")
+            print("-" * 50)
+            print(transcript_text)
+            print("-" * 50)
+            print(f"Debug: Transcript text length: {len(transcript_text)}")
+            
+            return transcript_text
+            
+        except Exception as e:
+            print(f"获取transcript文本时出错: {e}")
+            import traceback
+            traceback.print_exc()
+            return ""
+    
+    def get_prompt(self, prompt_name):
+        """安全地获取prompt模板"""
+        try:
+            if 'Prompts' not in self.config:
+                raise KeyError("配置文件中缺少 [Prompts] 部分")
+            if prompt_name not in self.config['Prompts']:
+                raise KeyError(f"配置文件中缺少 {prompt_name} 配置")
+            return self.config['Prompts'][prompt_name]
+        except Exception as e:
+            raise Exception(f"获取prompt失败: {str(e)}")
+    
     def manual_summarize(self):
         """手动触发总结"""
         try:
-            # TODO: 调用LLM进行总结
-            dummy_summary = "This is a dummy summary..."
+            # 获取transcript内容
+            transcript_text = self.get_transcript_text()
+            print(f"Transcript length: {len(transcript_text)}")  # Debug输出
+            
+            # 准备prompt参数
+            params = {
+                "transcript": transcript_text,
+                "meeting_topic": self.topics_text.get("1.0", tk.END).strip(),
+                "meeting_goals": self.agenda_text.get("1.0", tk.END).strip(),
+                "background": self.context_text.get("1.0", tk.END).strip(),
+                "language": self.language_var.get()
+            }
+            
+            # Debug输出
+            print("Prompt parameters:")
+            for key, value in params.items():
+                print(f"{key}: {value}")
+            
+            # 获取prompt模板并格式化
+            prompt = self.get_prompt('summarize_prompt').format(**params)
+            
+            # Debug输出
+            print("Final prompt:")
+            print(prompt)
+            
+            # 调用LLM
+            msgs = [
+                {"role": "system", "content": "You are a helpful meeting assistant."},
+                {"role": "user", "content": prompt}
+            ]
+            response = ask(msgs)
+            
+            # 更新UI
             self.summary_text.delete("1.0", tk.END)
-            self.summary_text.insert("1.0", dummy_summary)
+            self.summary_text.insert("1.0", response)
+            
         except Exception as e:
             self.show_error(f"总结生成失败: {str(e)}")
+            import traceback
+            traceback.print_exc()  # 打印完整的错误堆栈
     
     def manual_viewpoints(self):
         """手动触发观点分析"""
         try:
-            # TODO: 调用LLM进行观点分析
-            dummy_viewpoints = "These are dummy viewpoints..."
+            params = {
+                "transcript": self.get_transcript_text(),
+                "meeting_topic": self.topics_text.get("1.0", tk.END).strip(),
+                "meeting_goals": self.agenda_text.get("1.0", tk.END).strip(),
+                "user_name": self.username_var.get(),
+                "key_stakeholders": self.stakeholders_text.get("1.0", tk.END).strip(),
+                "language": self.language_var.get()
+            }
+            
+            prompt = self.get_prompt('viewpoints_prompt').format(**params)
+            msgs = [
+                {"role": "system", "content": "You are a helpful meeting assistant."},
+                {"role": "user", "content": prompt}
+            ]
+            response = ask(msgs)
+            
             self.views_text.delete("1.0", tk.END)
-            self.views_text.insert("1.0", dummy_viewpoints)
+            self.views_text.insert("1.0", response)
+            
         except Exception as e:
             self.show_error(f"观点分析失败: {str(e)}")
     
     def manual_navigation(self):
         """手动触发导航建议"""
         try:
-            # TODO: 调用LLM生成导航建议
-            dummy_navigation = "This is a dummy navigation guidance..."
+            params = {
+                "transcript": self.get_transcript_text(),
+                "meeting_topic": self.topics_text.get("1.0", tk.END).strip(),
+                "meeting_goals": self.agenda_text.get("1.0", tk.END).strip(),
+                "key_stakeholders": self.stakeholders_text.get("1.0", tk.END).strip(),
+                "user_name": self.username_var.get(),
+                "language": self.language_var.get(),
+                "notes": self.notes_text.get("1.0", tk.END).strip()
+            }
+            
+            prompt = self.get_prompt('navigate_prompt').format(**params)
+            msgs = [
+                {"role": "system", "content": "You are a helpful meeting assistant."},
+                {"role": "user", "content": prompt}
+            ]
+            response = ask(msgs)
+            
             self.nav_text.delete("1.0", tk.END)
-            self.nav_text.insert("1.0", dummy_navigation)
+            self.nav_text.insert("1.0", response)
+            
         except Exception as e:
             self.show_error(f"导航建议生成失败: {str(e)}")
     
     def submit_all(self):
-        """提交所有内容"""
+        """生成会议纪要并提交"""
         try:
-            # TODO: 实现提交逻辑
-            print("提交成功")
+            params = {
+                "transcript": self.get_transcript_text(),
+                "meeting_topic": self.topics_text.get("1.0", tk.END).strip(),
+                "meeting_goals": self.agenda_text.get("1.0", tk.END).strip(),
+                "language": self.language_var.get()
+            }
+            
+            prompt = self.get_prompt('minutes_prompt').format(**params)
+            msgs = [
+                {"role": "system", "content": "You are a helpful meeting assistant."},
+                {"role": "user", "content": prompt}
+            ]
+            response = ask(msgs)
+            
+            # TODO: 实现保存会议纪要的逻辑
+            print("会议纪要生成成功")
+            print(response)
+            
         except Exception as e:
             self.show_error(f"提交失败: {str(e)}")
 
