@@ -24,6 +24,16 @@ class MeetingNavigator:
         
         # 创建消息队列用于线程间通信
         self.message_queue = queue.Queue()
+        self.llm_queue = queue.Queue()
+        
+        # 初始化按钮相关的属性
+        self.buttons = {}  # 初始化按钮字典
+        self.button_states = {  # 初始化按钮状态
+            'summarize': False,
+            'viewpoints': False,
+            'navigate': False,
+            'submit': False
+        }
         
         # 初始化Transcript相关变量
         self.transcript_thread = None
@@ -44,17 +54,22 @@ class MeetingNavigator:
     
     def init_variables(self):
         """初始化所有变量"""
-        # 折叠状态变量
-        self.summary_expanded = tk.BooleanVar(value=True)
-        self.views_expanded = tk.BooleanVar(value=True)
-        self.nav_expanded = tk.BooleanVar(value=True)
+        # 加载默认值
+        defaults = self.config['Defaults']
         
         # 控制栏变量
-        self.duration_var = tk.StringVar(value="60min")
-        self.username_var = tk.StringVar()
-        self.language_var = tk.StringVar(value="En")
-        self.freq_var = tk.StringVar(value="30")
+        self.duration_var = tk.StringVar(value=defaults.get('duration', '60min'))
+        self.username_var = tk.StringVar(value=defaults.get('username', 'Default User'))
+        self.language_var = tk.StringVar(value=defaults.get('language', 'En'))
+        self.freq_var = tk.StringVar(value=defaults.get('live_freq', '30'))
         self.live_var = tk.BooleanVar(value=False)
+        
+        # 设置文本框默认值
+        self.default_context = defaults.get('context', '')
+        self.default_agenda = defaults.get('agenda', '')
+        self.default_topics = defaults.get('topics', '')
+        self.default_stakeholders = defaults.get('stakeholders', '')
+        self.default_notes = defaults.get('notes', '')
     
     def create_main_layout(self):
         """创建主布局"""
@@ -77,81 +92,154 @@ class MeetingNavigator:
     
     def create_left_panel(self, parent):
         """创建左侧面板"""
+        # 创建一个主Frame来容纳所有sections
+        self.left_main_frame = ttk.Frame(parent)
+        self.left_main_frame.pack(fill=tk.BOTH, expand=True)
+        
         # Live Transcript区域
-        transcript_frame = ttk.LabelFrame(parent, text="Live Transcript")
-        transcript_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
-        self.transcript_text = scrolledtext.ScrolledText(transcript_frame)
-        self.transcript_text.pack(fill=tk.BOTH, expand=True)
+        self.transcript_frame = ttk.Frame(self.left_main_frame)
+        self.transcript_frame.pack(fill=tk.X)
         
-        # Live Summary区域（可折叠）
-        self.summary_frame = ttk.LabelFrame(parent, text="Live Summary")
-        self.summary_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        # Transcript标题（可点击）
+        self.transcript_header = ttk.Label(
+            self.transcript_frame,
+            text="▼ Live Transcript",
+            cursor="hand2"
+        )
+        self.transcript_header.pack(fill=tk.X, padx=5, pady=2)
+        self.transcript_header.bind('<Button-1>', lambda e: self.toggle_transcript())
         
-        summary_header = ttk.Frame(self.summary_frame)
-        summary_header.pack(fill=tk.X)
-        ttk.Label(summary_header, text="Click to expand/collapse").pack(side=tk.LEFT)
-        ttk.Checkbutton(summary_header, variable=self.summary_expanded,
-                       command=self.toggle_summary).pack(side=tk.RIGHT)
+        # Transcript内容
+        self.transcript_content = ttk.Frame(self.transcript_frame)
+        self.transcript_content.pack(fill=tk.BOTH, expand=True)
+        self.transcript_text = scrolledtext.ScrolledText(self.transcript_content)
+        self.transcript_text.pack(fill=tk.BOTH, expand=True, padx=5, pady=2)
         
-        self.summary_text = scrolledtext.ScrolledText(self.summary_frame, height=6)
-        self.summary_text.pack(fill=tk.BOTH, expand=True)
+        # Live Summary区域
+        self.summary_frame = ttk.Frame(self.left_main_frame)
+        self.summary_frame.pack(fill=tk.X)
         
-        # Each one's view区域（可折叠）
-        self.views_frame = ttk.LabelFrame(parent, text="Each one's view")
-        self.views_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        self.summary_header = ttk.Label(
+            self.summary_frame,
+            text="▼ Live Summary",
+            cursor="hand2"
+        )
+        self.summary_header.pack(fill=tk.X, padx=5, pady=2)
+        self.summary_header.bind('<Button-1>', lambda e: self.toggle_summary())
         
-        views_header = ttk.Frame(self.views_frame)
-        views_header.pack(fill=tk.X)
-        ttk.Label(views_header, text="Click to expand/collapse").pack(side=tk.LEFT)
-        ttk.Checkbutton(views_header, variable=self.views_expanded,
-                       command=self.toggle_views).pack(side=tk.RIGHT)
+        self.summary_content = ttk.Frame(self.summary_frame)
+        self.summary_content.pack(fill=tk.BOTH, expand=True)
+        self.summary_text = scrolledtext.ScrolledText(self.summary_content)
+        self.summary_text.pack(fill=tk.BOTH, expand=True, padx=5, pady=2)
         
-        self.views_text = scrolledtext.ScrolledText(self.views_frame, height=6)
-        self.views_text.pack(fill=tk.BOTH, expand=True)
+        # Each one's view区域
+        self.views_frame = ttk.Frame(self.left_main_frame)
+        self.views_frame.pack(fill=tk.X)
         
-        # Navigation guidance区域（可折叠）
-        self.nav_frame = ttk.LabelFrame(parent, text="Navigation guidance")
-        self.nav_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        self.views_header = ttk.Label(
+            self.views_frame,
+            text="▼ Each one's view",
+            cursor="hand2"
+        )
+        self.views_header.pack(fill=tk.X, padx=5, pady=2)
+        self.views_header.bind('<Button-1>', lambda e: self.toggle_views())
         
-        nav_header = ttk.Frame(self.nav_frame)
-        nav_header.pack(fill=tk.X)
-        ttk.Label(nav_header, text="Click to expand/collapse").pack(side=tk.LEFT)
-        ttk.Checkbutton(nav_header, variable=self.nav_expanded,
-                       command=self.toggle_nav).pack(side=tk.RIGHT)
+        self.views_content = ttk.Frame(self.views_frame)
+        self.views_content.pack(fill=tk.BOTH, expand=True)
+        self.views_text = scrolledtext.ScrolledText(self.views_content)
+        self.views_text.pack(fill=tk.BOTH, expand=True, padx=5, pady=2)
         
-        self.nav_text = scrolledtext.ScrolledText(self.nav_frame, height=6)
-        self.nav_text.pack(fill=tk.BOTH, expand=True)
+        # Navigation guidance区域
+        self.nav_frame = ttk.Frame(self.left_main_frame)
+        self.nav_frame.pack(fill=tk.X)
+        
+        self.nav_header = ttk.Label(
+            self.nav_frame,
+            text="▼ Navigation guidance",
+            cursor="hand2"
+        )
+        self.nav_header.pack(fill=tk.X, padx=5, pady=2)
+        self.nav_header.bind('<Button-1>', lambda e: self.toggle_nav())
+        
+        self.nav_content = ttk.Frame(self.nav_frame)
+        self.nav_content.pack(fill=tk.BOTH, expand=True)
+        self.nav_text = scrolledtext.ScrolledText(self.nav_content)
+        self.nav_text.pack(fill=tk.BOTH, expand=True, padx=5, pady=2)
     
     def toggle_summary(self):
         """切换Summary区域的展开/折叠状态"""
-        if self.summary_expanded.get():
-            self.summary_text.pack(fill=tk.BOTH, expand=True)
+        if self.summary_content.winfo_viewable():
+            self.summary_content.pack_forget()
+            self.summary_header.configure(text="▶ Live Summary")
+            self.summary_frame.configure(height=25)
         else:
-            self.summary_text.pack_forget()
-        self.adjust_transcript_height()
+            self.summary_frame.configure(height=0)
+            self.summary_content.pack(fill=tk.BOTH, expand=True)
+            self.summary_header.configure(text="▼ Live Summary")
+        self.redistribute_space()
     
     def toggle_views(self):
         """切换Views区域的展开/折叠状态"""
-        if self.views_expanded.get():
-            self.views_text.pack(fill=tk.BOTH, expand=True)
+        if self.views_content.winfo_viewable():
+            self.views_content.pack_forget()
+            self.views_header.configure(text="▶ Each one's view")
+            self.views_frame.configure(height=25)
         else:
-            self.views_text.pack_forget()
-        self.adjust_transcript_height()
+            self.views_frame.configure(height=0)
+            self.views_content.pack(fill=tk.BOTH, expand=True)
+            self.views_header.configure(text="▼ Each one's view")
+        self.redistribute_space()
     
     def toggle_nav(self):
         """切换Navigation区域的展开/折叠状态"""
-        if self.nav_expanded.get():
-            self.nav_text.pack(fill=tk.BOTH, expand=True)
+        if self.nav_content.winfo_viewable():
+            self.nav_content.pack_forget()
+            self.nav_header.configure(text="▶ Navigation guidance")
+            self.nav_frame.configure(height=25)
         else:
-            self.nav_text.pack_forget()
-        self.adjust_transcript_height()
+            self.nav_frame.configure(height=0)
+            self.nav_content.pack(fill=tk.BOTH, expand=True)
+            self.nav_header.configure(text="▼ Navigation guidance")
+        self.redistribute_space()
     
-    def adjust_transcript_height(self):
-        """调整Transcript区域的高度"""
-        collapsed_count = (not self.summary_expanded.get()) + \
-                         (not self.views_expanded.get()) + \
-                         (not self.nav_expanded.get())
-        self.transcript_text.configure(height=10 + collapsed_count * 6)
+    def toggle_transcript(self):
+        """切换Transcript区域的展开/折叠状态"""
+        if self.transcript_content.winfo_viewable():
+            self.transcript_content.pack_forget()
+            self.transcript_header.configure(text="▶ Live Transcript")
+            self.transcript_frame.configure(height=25)  # 折叠时的最小高度
+        else:
+            self.transcript_frame.configure(height=0)  # 重置高度限制
+            self.transcript_content.pack(fill=tk.BOTH, expand=True)
+            self.transcript_header.configure(text="▼ Live Transcript")
+        self.redistribute_space()
+    
+    def redistribute_space(self):
+        """重新分配空间"""
+        # 获取所有frame
+        all_frames = [
+            (self.transcript_frame, self.transcript_content, self.transcript_text),
+            (self.summary_frame, self.summary_content, self.summary_text),
+            (self.views_frame, self.views_content, self.views_text),
+            (self.nav_frame, self.nav_content, self.nav_text)
+        ]
+        
+        # 计算展开的sections数量
+        expanded_count = sum(1 for _, content, _ in all_frames if content.winfo_viewable())
+        
+        # 设置每个frame的权重
+        for frame, content, text_widget in all_frames:
+            if content.winfo_viewable():
+                # 展开状态：设置frame可扩展，并分配相等的空间
+                frame.pack(fill=tk.BOTH, expand=True)
+                text_widget.configure(height=10)  # 设置一个基础高度
+            else:
+                # ���叠状态：固定高度，不扩展
+                frame.pack(fill=tk.X, expand=False)
+                frame.configure(height=25)  # 标题行高度
+        
+        # 更新UI
+        self.root.update_idletasks()
     
     def get_context(self):
         """获取所有上下文信息"""
@@ -171,21 +259,42 @@ class MeetingNavigator:
     def update_transcript_display(self, transcript_item):
         """更新转录内容显示"""
         try:
-            # 获取当前显示的最后一行
-            last_line = self.transcript_text.get("end-2c linestart", "end-1c")
-            if last_line:
-                # 解析最后一行的时间戳和说话者
-                match = re.match(r'\[([\d:]+)\] ([^:]+):', last_line)
-                if match:
-                    last_timestamp, last_speaker = match.groups()
-                    # 如果新内容与最后一行来自同一时间和说话者，则替换最后一行
-                    if (transcript_item.timestamp == last_timestamp and 
-                        transcript_item.speaker == last_speaker):
-                        self.transcript_text.delete("end-2c linestart", "end-1c")
+            # 获取所有当前显示的内容
+            current_text = self.transcript_text.get("1.0", tk.END)
+            lines = current_text.splitlines()
             
-            # 追加新内容
-            self.transcript_text.insert(tk.END, f"{transcript_item.to_string()}\n")
-            self.transcript_text.see(tk.END)  # 自动滚动到底部
+            # 查找是否存在相同时间戳和说话者的行
+            found = False
+            for i, line in enumerate(lines):
+                if not line:  # 跳过空行
+                    continue
+                # 解析行内容
+                match = re.match(r'\[([\d:]+)\] ([^:]+):', line)
+                if match:
+                    timestamp, speaker = match.groups()
+                    # 如果找到相同时间戳和说话者的行
+                    if timestamp == transcript_item.timestamp and speaker == transcript_item.speaker:
+                        found = True
+                        # 获取当前行的内容
+                        current_content = line.split(':', 1)[1].strip()
+                        # 如果新内容更长，则替换这一行
+                        if len(transcript_item.content) > len(current_content):
+                            # 清除所有内容
+                            self.transcript_text.delete("1.0", tk.END)
+                            # 重建内容：保持之前的行
+                            for j, old_line in enumerate(lines):
+                                if j == i:  # 在这个位置插入新内容
+                                    self.transcript_text.insert(tk.END, f"{transcript_item.to_string()}\n")
+                                elif old_line:  # 插入其他非空行
+                                    self.transcript_text.insert(tk.END, f"{old_line}\n")
+                        break
+            
+            # 如果没有找到相同的行，追加新内容
+            if not found:
+                self.transcript_text.insert(tk.END, f"{transcript_item.to_string()}\n")
+            
+            # 自动滚动到底部
+            self.transcript_text.see(tk.END)
             
         except Exception as e:
             print(f"更新转录显示错误: {e}")
@@ -227,6 +336,13 @@ class MeetingNavigator:
         
         # 底部按钮栏
         self.create_button_bar(parent)
+        
+        # 设置默认值
+        self.context_text.insert("1.0", self.default_context)
+        self.agenda_text.insert("1.0", self.default_agenda)
+        self.topics_text.insert("1.0", self.default_topics)
+        self.stakeholders_text.insert("1.0", self.default_stakeholders)
+        self.notes_text.insert("1.0", self.default_notes)
     
     def create_control_bar(self, parent):
         """创建顶部控制栏"""
@@ -235,14 +351,12 @@ class MeetingNavigator:
         
         # Duration
         ttk.Label(control_frame, text="Duration").pack(side=tk.LEFT, padx=2)
-        self.duration_var = tk.StringVar(value="60min")
         ttk.Combobox(control_frame, textvariable=self.duration_var, 
                     values=["30min", "60min", "90min", "120min"], 
                     width=8).pack(side=tk.LEFT, padx=2)
         
-        # For (username)
+        # For (username) - 使用已初始化的变量
         ttk.Label(control_frame, text="For").pack(side=tk.LEFT, padx=2)
-        self.username_var = tk.StringVar()
         ttk.Entry(control_frame, textvariable=self.username_var, 
                  width=15).pack(side=tk.LEFT, padx=2)
         
@@ -269,16 +383,25 @@ class MeetingNavigator:
         button_frame.pack(fill=tk.X, padx=5, pady=5)
         
         # 右对齐按钮
-        ttk.Button(button_frame, text="Save", 
-                  command=self.save_all).pack(side=tk.RIGHT, padx=5)
-        ttk.Button(button_frame, text="Summarize", 
-                  command=self.manual_summarize).pack(side=tk.RIGHT, padx=5)
-        ttk.Button(button_frame, text="Viewpoints", 
-                  command=self.manual_viewpoints).pack(side=tk.RIGHT, padx=5)
-        ttk.Button(button_frame, text="Navigate", 
-                  command=self.manual_navigation).pack(side=tk.RIGHT, padx=5)
-        ttk.Button(button_frame, text="Submit", 
-                  command=self.submit_all).pack(side=tk.RIGHT, padx=5)
+        self.buttons['save'] = ttk.Button(button_frame, text="Save", 
+                                        command=self.save_all)
+        self.buttons['save'].pack(side=tk.RIGHT, padx=5)
+        
+        self.buttons['summarize'] = ttk.Button(button_frame, text="Summarize", 
+                                             command=self.manual_summarize)
+        self.buttons['summarize'].pack(side=tk.RIGHT, padx=5)
+        
+        self.buttons['viewpoints'] = ttk.Button(button_frame, text="Viewpoints", 
+                                              command=self.manual_viewpoints)
+        self.buttons['viewpoints'].pack(side=tk.RIGHT, padx=5)
+        
+        self.buttons['navigate'] = ttk.Button(button_frame, text="Navigate", 
+                                            command=self.manual_navigation)
+        self.buttons['navigate'].pack(side=tk.RIGHT, padx=5)
+        
+        self.buttons['submit'] = ttk.Button(button_frame, text="Submit", 
+                                          command=self.submit_all)
+        self.buttons['submit'].pack(side=tk.RIGHT, padx=5)
     
     def start_transcript_monitor(self):
         """启动转录监控线程"""
@@ -292,7 +415,7 @@ class MeetingNavigator:
                     )
                     # 设置manager
                     self.transcript_manager = manager
-                    # 运行监控循环
+                    # 运行控循环
                     monitor_loop()
             except Exception as e:
                 print(f"Debug: Error in run_monitor: {e}")
@@ -308,13 +431,28 @@ class MeetingNavigator:
     def update_ui(self):
         """更新UI的周期性任务"""
         try:
-            # 处理消息队列中的消息
+            # 处理transcript消息队列
             while not self.message_queue.empty():
                 msg_type, msg_content = self.message_queue.get_nowait()
-                if msg_type == "transcript":  # 改回原来的消息类型
+                if msg_type == "transcript":
                     self.update_transcript_display(msg_content)
                 elif msg_type == "error":
                     self.show_error(msg_content)
+            
+            # 处理LLM响应消息队列
+            while not self.llm_queue.empty():
+                msg_type, content = self.llm_queue.get_nowait()
+                if msg_type == "summary":
+                    self.summary_text.delete("1.0", tk.END)
+                    self.summary_text.insert("1.0", content)
+                elif msg_type == "viewpoints":
+                    self.views_text.delete("1.0", tk.END)
+                    self.views_text.insert("1.0", content)
+                elif msg_type == "navigation":
+                    self.nav_text.delete("1.0", tk.END)
+                    self.nav_text.insert("1.0", content)
+                elif msg_type == "error":
+                    self.show_error(content)
             
             # 如果实时功能开启，执行实时更新
             if self.live_var.get():
@@ -360,13 +498,13 @@ class MeetingNavigator:
                 "stakeholders": self.stakeholders_text.get("1.0", tk.END).strip(),
                 "notes": self.notes_text.get("1.0", tk.END).strip()
             }
-            # TODO: 实现保存逻辑
+            # TODO: 实保存逻辑
             print("保存成功")
         except Exception as e:
             self.show_error(f"保存失败: {str(e)}")
     
     def get_transcript_text(self):
-        """获取所有transcript内容"""
+        """获取有transcript内容"""
         try:
             print("\nDebug: Getting transcript text...")
             
@@ -416,49 +554,54 @@ class MeetingNavigator:
         except Exception as e:
             raise Exception(f"获取prompt失败: {str(e)}")
     
+    def call_llm_async(self, msg_type, msgs, button_name):
+        """异步调用LLM"""
+        def run_llm():
+            try:
+                # 开始动画
+                self.button_states[button_name.lower()] = True
+                self.root.after(0, self.update_button_animation)
+                
+                response = ask(msgs)
+                self.llm_queue.put((msg_type, response))
+                
+            except Exception as e:
+                self.llm_queue.put(("error", f"LLM调用失败: {str(e)}"))
+            finally:
+                # 停止动画
+                self.button_states[button_name.lower()] = False
+                # 恢复按钮文字
+                self.root.after(0, lambda: self.buttons[button_name.lower()].configure(
+                    text=button_name.capitalize()))
+        
+        thread = threading.Thread(target=run_llm)
+        thread.daemon = True
+        thread.start()
+    
     def manual_summarize(self):
         """手动触发总结"""
         try:
-            # 获取transcript内容
-            transcript_text = self.get_transcript_text()
-            print(f"Transcript length: {len(transcript_text)}")  # Debug输出
-            
             # 准备prompt参数
             params = {
-                "transcript": transcript_text,
+                "transcript": self.get_transcript_text(),
                 "meeting_topic": self.topics_text.get("1.0", tk.END).strip(),
                 "meeting_goals": self.agenda_text.get("1.0", tk.END).strip(),
                 "background": self.context_text.get("1.0", tk.END).strip(),
                 "language": self.language_var.get()
             }
             
-            # Debug输出
-            print("Prompt parameters:")
-            for key, value in params.items():
-                print(f"{key}: {value}")
-            
             # 获取prompt模板并格式化
             prompt = self.get_prompt('summarize_prompt').format(**params)
             
-            # Debug输出
-            print("Final prompt:")
-            print(prompt)
-            
-            # 调用LLM
+            # 异步调用LLM
             msgs = [
                 {"role": "system", "content": "You are a helpful meeting assistant."},
                 {"role": "user", "content": prompt}
             ]
-            response = ask(msgs)
-            
-            # 更新UI
-            self.summary_text.delete("1.0", tk.END)
-            self.summary_text.insert("1.0", response)
+            self.call_llm_async("summary", msgs, "Summarize")
             
         except Exception as e:
             self.show_error(f"总结生成失败: {str(e)}")
-            import traceback
-            traceback.print_exc()  # 打印完整的错误堆栈
     
     def manual_viewpoints(self):
         """手动触发观点分析"""
@@ -477,10 +620,7 @@ class MeetingNavigator:
                 {"role": "system", "content": "You are a helpful meeting assistant."},
                 {"role": "user", "content": prompt}
             ]
-            response = ask(msgs)
-            
-            self.views_text.delete("1.0", tk.END)
-            self.views_text.insert("1.0", response)
+            self.call_llm_async("viewpoints", msgs, "Viewpoints")
             
         except Exception as e:
             self.show_error(f"观点分析失败: {str(e)}")
@@ -503,10 +643,7 @@ class MeetingNavigator:
                 {"role": "system", "content": "You are a helpful meeting assistant."},
                 {"role": "user", "content": prompt}
             ]
-            response = ask(msgs)
-            
-            self.nav_text.delete("1.0", tk.END)
-            self.nav_text.insert("1.0", response)
+            self.call_llm_async("navigation", msgs, "Navigate")
             
         except Exception as e:
             self.show_error(f"导航建议生成失败: {str(e)}")
@@ -534,6 +671,22 @@ class MeetingNavigator:
             
         except Exception as e:
             self.show_error(f"提交失败: {str(e)}")
+    
+    def update_button_animation(self):
+        """更新按钮动画"""
+        for button_name, is_active in self.button_states.items():
+            if is_active:
+                current_text = self.buttons[button_name].cget('text')
+                base_text = button_name.capitalize()
+                dots = current_text[len(base_text):].count('.')
+                
+                # 更新点的数量（0-6循环）
+                new_dots = (dots + 1) % 7
+                self.buttons[button_name].configure(text=f"{base_text}{'.' * new_dots}")
+        
+        # 继续动画
+        if any(self.button_states.values()):
+            self.root.after(300, self.update_button_animation)
 
 def main():
     root = tk.Tk()
