@@ -10,6 +10,47 @@ import configparser
 from gpt4o import ask
 import os
 
+class NotificationWindow:
+    def __init__(self, parent, message, duration=4):
+        self.window = tk.Toplevel(parent)
+        self.window.overrideredirect(True)  # 移除窗口装饰
+        
+        # 设置窗口样式
+        self.window.configure(bg='#333333')
+        
+        # 创建消息标签
+        self.label = tk.Label(
+            self.window,
+            text=message,
+            fg='white',
+            bg='#333333',
+            padx=20,
+            pady=10,
+            font=('Arial', 10)
+        )
+        self.label.pack()
+        
+        # 获取主窗口位置和大小
+        parent_x = parent.winfo_x()
+        parent_y = parent.winfo_y()
+        parent_width = parent.winfo_width()
+        
+        # 计算通知窗口位置（右上角）
+        window_width = self.label.winfo_reqwidth() + 40  # 加上padding
+        window_height = self.label.winfo_reqheight() + 20
+        
+        # 设置窗口位置
+        x = parent_x + parent_width - window_width - 20
+        y = parent_y + 20
+        
+        self.window.geometry(f"{window_width}x{window_height}+{x}+{y}")
+        
+        # 设置定时器关闭窗口
+        self.window.after(duration * 1000, self.close)
+    
+    def close(self):
+        self.window.destroy()
+
 class MeetingNavigator:
     def __init__(self, root):
         # 首先加载配置文件
@@ -51,6 +92,9 @@ class MeetingNavigator:
         
         # 启动转录监控
         self.start_transcript_monitor()
+        
+        # 获取通知显示时间
+        self.notification_duration = int(self.config['Defaults'].get('notification_showtime', '4'))
     
     def init_variables(self):
         """初始化所有变量"""
@@ -234,7 +278,7 @@ class MeetingNavigator:
                 frame.pack(fill=tk.BOTH, expand=True)
                 text_widget.configure(height=10)  # 设置一个基础高度
             else:
-                # ���叠状态：固定高度，不扩展
+                # 叠状态：固定高度，不扩展
                 frame.pack(fill=tk.X, expand=False)
                 frame.configure(height=25)  # 标题行高度
         
@@ -490,18 +534,23 @@ class MeetingNavigator:
     def save_all(self):
         """保存所有内容"""
         try:
-            # 保存会议信息
-            meeting_info = {
-                "context": self.context_text.get("1.0", tk.END).strip(),
-                "agenda": self.agenda_text.get("1.0", tk.END).strip(),
-                "topics": self.topics_text.get("1.0", tk.END).strip(),
-                "stakeholders": self.stakeholders_text.get("1.0", tk.END).strip(),
-                "notes": self.notes_text.get("1.0", tk.END).strip()
-            }
-            # TODO: 实保存逻辑
-            print("保存成功")
+            if self.transcript_manager:
+                # 使用TranscriptManager的save_to_file方法保存transcript
+                output_path = self.transcript_manager._get_output_path()
+                self.transcript_manager.save_to_file()
+                
+                # 显示成功通知
+                message = f"保存成功!\n文件路径: {output_path}"
+                self.show_notification(message)
+                
+                print("Transcript保存成功")
+            else:
+                raise Exception("Transcript manager未初始化")
+            
         except Exception as e:
             self.show_error(f"保存失败: {str(e)}")
+            import traceback
+            traceback.print_exc()
     
     def get_transcript_text(self):
         """获取有transcript内容"""
@@ -687,6 +736,10 @@ class MeetingNavigator:
         # 继续动画
         if any(self.button_states.values()):
             self.root.after(300, self.update_button_animation)
+    
+    def show_notification(self, message):
+        """显示通知"""
+        NotificationWindow(self.root, message, self.notification_duration)
 
 def main():
     root = tk.Tk()
