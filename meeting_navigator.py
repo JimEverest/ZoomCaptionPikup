@@ -51,6 +51,135 @@ class NotificationWindow:
     def close(self):
         self.window.destroy()
 
+class ConfigDialog:
+    def __init__(self, parent, config, callback):
+        self.top = tk.Toplevel(parent)
+        self.top.title("Configuration")
+        self.top.geometry("800x800")
+        self.config = config
+        self.callback = callback
+        
+        # 创建notebook
+        self.notebook = ttk.Notebook(self.top)
+        self.notebook.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        
+        # 创建各个标签页
+        self.create_defaults_tab(self.notebook)
+        self.create_prompts_tab(self.notebook)
+        self.create_genai_tab(self.notebook)
+        
+        # 创建按钮区域
+        button_frame = ttk.Frame(self.top)
+        button_frame.pack(fill=tk.X, padx=5, pady=5)
+        
+        ttk.Button(button_frame, text="Save", command=self.save).pack(side=tk.RIGHT, padx=5)
+        ttk.Button(button_frame, text="Cancel", command=self.cancel).pack(side=tk.RIGHT, padx=5)
+        
+        # 使对话框模态
+        self.top.transient(parent)
+        self.top.grab_set()
+    
+    def create_defaults_tab(self, notebook):
+        """创建Defaults标签页"""
+        defaults_frame = ttk.Frame(notebook)
+        notebook.add(defaults_frame, text="Defaults")
+        
+        # 创建默认值配置项
+        self.default_vars = {}
+        row = 0
+        
+        # 单行输入项
+        single_line_items = ['duration', 'username', 'language', 'live_freq', 'notification_showtime']
+        for key in single_line_items:
+            ttk.Label(defaults_frame, text=key).grid(row=row, column=0, padx=5, pady=2)
+            var = tk.StringVar(value=self.config.get('Defaults', key, fallback=''))
+            ttk.Entry(defaults_frame, textvariable=var).grid(row=row, column=1, padx=5, pady=2)
+            self.default_vars[key] = var
+            row += 1
+        
+        # 多行文本框
+        multiline_items = ['context', 'agenda', 'topics', 'stakeholders', 'notes']
+        for key in multiline_items:
+            ttk.Label(defaults_frame, text=key).grid(row=row, column=0, padx=5, pady=2)
+            text_widget = tk.Text(defaults_frame, height=4, width=50)
+            text_widget.grid(row=row, column=1, padx=5, pady=2)
+            text_widget.insert("1.0", self.config.get('Defaults', key, fallback=''))
+            self.default_vars[key] = text_widget
+            row += 1
+    
+    def create_prompts_tab(self, notebook):
+        """创建Prompts标签页"""
+        prompts_frame = ttk.Frame(notebook)
+        notebook.add(prompts_frame, text="Prompts")
+        
+        # 创建prompt配置项
+        self.prompt_vars = {}
+        prompts = [
+            ('summarize_prompt', 'Summarize Prompt'),
+            ('viewpoints_prompt', 'Viewpoints Prompt'),
+            ('navigate_prompt', 'Navigation Prompt'),
+            ('minutes_prompt', 'Meeting Minutes Prompt')
+        ]
+        
+        for row, (key, label) in enumerate(prompts):
+            ttk.Label(prompts_frame, text=label).grid(row=row, column=0, padx=5, pady=5)
+            text_widget = tk.Text(prompts_frame, height=8, width=60)
+            text_widget.grid(row=row, column=1, padx=5, pady=5)
+            text_widget.insert("1.0", self.config.get('Prompts', key, fallback=''))
+            self.prompt_vars[key] = text_widget
+    
+    def create_genai_tab(self, notebook):
+        """创建GenAI标签页"""
+        genai_frame = ttk.Frame(notebook)
+        notebook.add(genai_frame, text="GenAI")
+        
+        # 创建GenAI配置项
+        self.genai_vars = {}
+        row = 0
+        for key in ['openai_token', 'openai_token_url', 'openai_health_url', 
+                   'openai_mm_url', 'openai_chat_url', 'openai_user_name', 
+                   'openai_password', 'openai_application_id', 'openai_application_name',
+                   'head_token_key']:
+            ttk.Label(genai_frame, text=key).grid(row=row, column=0, padx=5, pady=2)
+            var = tk.StringVar(value=self.config.get('GenAI', key, fallback=''))
+            ttk.Entry(genai_frame, textvariable=var).grid(row=row, column=1, padx=5, pady=2)
+            self.genai_vars[key] = var
+            row += 1
+    
+    def save(self):
+        """保存配置"""
+        # 更新Defaults部分
+        for key, var in self.default_vars.items():
+            if isinstance(var, tk.Text):
+                value = var.get("1.0", tk.END).strip()
+            else:
+                value = var.get()
+            self.config.set('Defaults', key, value)
+        
+        # 更新Prompts部分
+        for key, var in self.prompt_vars.items():
+            value = var.get("1.0", tk.END).strip()
+            self.config.set('Prompts', key, value)
+        
+        # 更新GenAI部分
+        for key, var in self.genai_vars.items():
+            self.config.set('GenAI', key, var.get())
+        
+        # 保存到文件
+        config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'config.ini')
+        with open(config_path, 'w', encoding='utf-8') as f:
+            self.config.write(f)
+        
+        # 调用回调函数更新主程序的配置
+        self.callback()
+        
+        # 关闭对话框
+        self.top.destroy()
+    
+    def cancel(self):
+        """取消配置"""
+        self.top.destroy()
+
 class MeetingNavigator:
     def __init__(self, root):
         # 首先加载配置文件
@@ -193,7 +322,7 @@ class MeetingNavigator:
         self.views_text = scrolledtext.ScrolledText(self.views_content)
         self.views_text.pack(fill=tk.BOTH, expand=True, padx=5, pady=2)
         
-        # Navigation guidance区域
+        # Navigation guidance区
         self.nav_frame = ttk.Frame(self.left_main_frame)
         self.nav_frame.pack(fill=tk.X)
         
@@ -425,6 +554,11 @@ class MeetingNavigator:
         """创建底部按钮栏"""
         button_frame = ttk.Frame(parent)
         button_frame.pack(fill=tk.X, padx=5, pady=5)
+        
+        # 左对齐的Config按钮
+        self.buttons['config'] = ttk.Button(button_frame, text="Config", 
+                                          command=self.show_config_dialog)
+        self.buttons['config'].pack(side=tk.LEFT, padx=5)
         
         # 右对齐按钮
         self.buttons['save'] = ttk.Button(button_frame, text="Save", 
@@ -740,6 +874,22 @@ class MeetingNavigator:
     def show_notification(self, message):
         """显示通知"""
         NotificationWindow(self.root, message, self.notification_duration)
+    
+    def show_config_dialog(self):
+        """显示配置对话框"""
+        ConfigDialog(self.root, self.config, self.reload_config)
+    
+    def reload_config(self):
+        """重新加载配置"""
+        # 重新读取配置文件
+        config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'config.ini')
+        self.config.read(config_path, encoding='utf-8')
+        
+        # 更新通知显示时间
+        self.notification_duration = int(self.config['Defaults'].get('notification_showtime', '4'))
+        
+        # 显示成功通知
+        self.show_notification("配置已更新")
 
 def main():
     root = tk.Tk()
