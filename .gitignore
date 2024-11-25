@@ -1,0 +1,6 @@
+__pycache__/test.cpython-312.pyc
+@AutomationLog.txt
+*.pyc
+*.pyo
+*.pyd
+*.pyz
